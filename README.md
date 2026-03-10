@@ -1,6 +1,6 @@
 # SSLUnpinner
 
-An LSPosed module to disable SSL Pinning on Android, featuring support for standard Java/Android SSL APIs and Flutter applications.
+A LSPosed module to disable SSL Pinning on Android, featuring support for standard Java/Android SSL APIs and Flutter applications.
 
 ## Support Status
 Verified working on:
