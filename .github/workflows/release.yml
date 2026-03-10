@@ -31,14 +31,16 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/SSLUnpinner-${{ github.sha }}.apk
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/SSLUnpinner-${SHORT_SHA}.apk
 
       - name: Upload Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "app/build/outputs/apk/debug/SSLUnpinner-${{ github.sha }}.apk"
-          name: "Commit: ${{ github.sha }}"
-          tag: "${{ github.sha }}"
+          artifacts: "app/build/outputs/apk/debug/SSLUnpinner-${{ env.SHORT_SHA }}.apk"
+          name: "Commit: ${{ env.SHORT_SHA }}"
+          tag: "${{ env.SHORT_SHA }}"
           commit: ${{ github.sha }}
-          body: "Automated build for commit ${{ github.sha }}"
+          body: "Automated build for commit ${{ env.SHORT_SHA }}"
           token: ${{ secrets.GITHUB_TOKEN }}
