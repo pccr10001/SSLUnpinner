@@ -1,0 +1,8 @@
+build
+.idea
+.kotlin
+temp_*
+*.js
+refs
+build_*
+.gradle

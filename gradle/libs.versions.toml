@@ -1,0 +1,15 @@
+[versions]
+annotation = "1.9.1"
+kotlin = "2.3.10"
+lint = "32.0.1"
+agp = "8.1.0"
+
+[plugins]
+kotlin = { id = "org.jetbrains.kotlin.jvm" }
+agp-lib = { id = "com.android.library" }
+
+[libraries]
+annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
+lint-api = { module = "com.android.tools.lint:lint-api", version.ref = "lint" }
+lint-checks = { module = "com.android.tools.lint:lint-checks", version.ref = "lint" }
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }

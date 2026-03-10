@@ -1,0 +1,6 @@
+[submodule "libxposed-api"]
+	path = libxposed-api
+	url = https://github.com/libxposed/api.git
+[submodule "libxposed-compat"]
+	path = libxposed-compat
+	url = https://github.com/LSPosed/DisableFlagSecure.git

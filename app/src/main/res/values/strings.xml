@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SSL Unpinner</string>
+    <string name="xposed_module_description">LSPosed SSL pinning bypass module for authorized security testing.</string>
+</resources>
