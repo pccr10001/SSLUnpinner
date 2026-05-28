@@ -24,10 +24,4 @@ dependencyResolutionManagement {
 rootProject.name = "SSL Unpinner"
 include(":app")
 include(":api")
-project(":api").projectDir = file("libxposed-api/api")
-
-include(":checks")
-project(":checks").projectDir = file("libxposed-api/checks")
-
-include(":libxposed-compat")
-project(":libxposed-compat").projectDir = file("libxposed-compat/libxposed-compat")
+project(":api").projectDir = file("libxposed-101/api")

@@ -11,27 +11,20 @@ tasks.register<Delete>("clean") {
 
 subprojects {
     afterEvaluate {
-        if (name == "checks") {
-            tasks.configureEach {
-                if (name.contains("compile", ignoreCase = true) || name.contains("lint", ignoreCase = true)) {
-                    enabled = false
-                }
-            }
-        }
-        if (name == "libxposed-compat" || name == "api") {
+        if (name == "api") {
             plugins.withId("com.android.library") {
                 val android = extensions.getByName("android") as com.android.build.gradle.LibraryExtension
                 android.compileOptions {
-                    sourceCompatibility = JavaVersion.VERSION_11
-                    targetCompatibility = JavaVersion.VERSION_11
+                    sourceCompatibility = JavaVersion.VERSION_17
+                    targetCompatibility = JavaVersion.VERSION_17
                 }
             }
             tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-                kotlinOptions.jvmTarget = "11"
+                kotlinOptions.jvmTarget = "17"
             }
             tasks.withType<JavaCompile>().configureEach {
-                sourceCompatibility = "11"
-                targetCompatibility = "11"
+                sourceCompatibility = "17"
+                targetCompatibility = "17"
             }
         }
     }

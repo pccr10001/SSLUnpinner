@@ -1,11 +1,12 @@
 package li.power.app.sslunpinner.xposed
 
+import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
-import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
-import java.lang.reflect.Constructor
-import java.lang.reflect.Member
+import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
+import java.io.File
+import java.lang.reflect.Executable
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.ArrayList
@@ -15,25 +16,20 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
-import android.util.Log
-import io.github.libxposed.api.annotations.BeforeInvocation
-import io.github.libxposed.api.annotations.XposedHooker
-import java.io.File
 
-class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedModule(base, param) {
+class SslUnpinModule : XposedModule() {
 
     private fun logMessage(msg: String) {
-        log(msg)
+        log(Log.DEBUG, "SSLUnpinner", msg)
         Log.d("SSLUnpinner", msg)
     }
 
-    init {
+    override fun onModuleLoaded(param: ModuleLoadedParam) {
         module = this
         logMessage("SSLUnpinner loaded in process: ${param.processName}")
     }
 
-    override fun onPackageLoaded(param: PackageLoadedParam) {
-        super.onPackageLoaded(param)
+    override fun onPackageReady(param: PackageReadyParam) {
         if (!param.isFirstPackage) {
             return
         }
@@ -75,7 +71,7 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
         runCatching {
             methodActions[method] = action
-            hook(method, GenericBypassHooker::class.java)
+            hook(method).intercept(GenericBypassHooker())
         }.onFailure {
             methodActions.remove(method)
             hookedMembers.remove(key)
@@ -88,50 +84,41 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
     private fun installSslPeerUnverifiedConstructorHooks(classLoader: ClassLoader) {
         val exceptionClass = findClass(SSLPeerUnverifiedException::class.java.name, classLoader) ?: return
         for (constructor in exceptionClass.declaredConstructors) {
-            installConstructorHook(constructor)
+            val key = constructor.toGenericString()
+            if (!hookedMembers.add(key)) continue
+            runCatching {
+                hook(constructor).intercept(SslPeerUnverifiedHooker())
+            }.onFailure {
+                hookedMembers.remove(key)
+                logMessage("Failed to hook constructor ${constructor.declaringClass.name}: ${it.message}")
+            }
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun installConstructorHook(constructor: Constructor<*>) {
-        val key = constructor.toGenericString()
-        if (!hookedMembers.add(key)) {
-            return
-        }
-        runCatching {
-            hook(constructor as Constructor<Any>, SslPeerUnverifiedHooker::class.java)
-        }.onFailure {
-            hookedMembers.remove(key)
-            logMessage("Failed to hook constructor ${constructor.declaringClass.name}: ${it.message}")
-        }
-    }
-
-    private fun handleGenericHookBefore(callback: XposedInterface.BeforeHookCallback) {
-        val action = methodActions[callback.member] ?: return
-        when (action) {
-            HookAction.SKIP_VOID -> callback.returnAndSkip(null)
-            HookAction.RETURN_TRUE -> callback.returnAndSkip(true)
-            HookAction.RETURN_FALSE -> callback.returnAndSkip(false)
-            HookAction.RETURN_NULL -> callback.returnAndSkip(null)
-            HookAction.RETURN_ARG0 -> callback.returnAndSkip(callback.args.firstOrNull())
-            HookAction.RETURN_EMPTY_LIST -> callback.returnAndSkip(ArrayList<Any>())
-            HookAction.RETURN_SAFE_DEFAULT -> callback.returnAndSkip(defaultResultForMember(callback.member))
+    private fun handleGenericHookBefore(chain: XposedInterface.Chain): Any? {
+        val action = methodActions[chain.executable] ?: return chain.proceed()
+        return when (action) {
+            HookAction.SKIP_VOID -> null
+            HookAction.RETURN_TRUE -> true
+            HookAction.RETURN_FALSE -> false
+            HookAction.RETURN_NULL -> null
+            HookAction.RETURN_ARG0 -> chain.getArg(0)
+            HookAction.RETURN_EMPTY_LIST -> ArrayList<Any>()
+            HookAction.RETURN_SAFE_DEFAULT -> defaultResultForExecutable(chain.executable)
             HookAction.PROCEED_SSL_ERROR_HANDLER -> {
-                proceedSslErrorHandler(callback.args)
-                callback.returnAndSkip(null)
+                proceedSslErrorHandler(chain.args.toTypedArray())
+                null
             }
             HookAction.PROCEED_INTERCEPTOR_CHAIN -> {
-                callback.returnAndSkip(proceedInterceptorChain(callback.args.firstOrNull()))
+                proceedInterceptorChain(chain.args.firstOrNull())
             }
             HookAction.FORCE_ARG0_TRUE -> {
-                if (callback.args.isNotEmpty()) {
-                    callback.args[0] = true
-                }
+                val newArgs = chain.args.toMutableList().also { if (it.isNotEmpty()) it[0] = true }.toTypedArray()
+                chain.proceed(newArgs)
             }
             HookAction.REPLACE_TRUST_MANAGERS -> {
-                if (callback.args.size > 1) {
-                    callback.args[1] = TRUST_ALL_MANAGERS
-                }
+                val newArgs = chain.args.toMutableList().also { if (it.size > 1) it[1] = TRUST_ALL_MANAGERS }.toTypedArray()
+                chain.proceed(newArgs)
             }
         }
     }
@@ -171,8 +158,8 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
     }
 
-    private fun defaultResultForMember(member: Member): Any? {
-        val method = member as? Method ?: return null
+    private fun defaultResultForExecutable(executable: Executable): Any? {
+        val method = executable as? Method ?: return null
         return defaultResultForReturnType(method.returnType)
     }
 
@@ -332,26 +319,22 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
     }
 
-    @XposedHooker
-    class GenericBypassHooker : XposedInterface.Hooker {
-        companion object {
-            @JvmStatic
-            @BeforeInvocation
-            fun beforeInvocation(callback: XposedInterface.BeforeHookCallback) {
-                module.handleGenericHookBefore(callback)
-            }
+    inner class GenericBypassHooker : XposedInterface.Hooker {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            return handleGenericHookBefore(chain)
         }
     }
 
-    @XposedHooker
-    class SslPeerUnverifiedHooker : XposedInterface.Hooker {
-        companion object {
-            @JvmStatic
-            @BeforeInvocation
-            @Suppress("UNUSED_PARAMETER")
-            fun beforeInvocation(callback: XposedInterface.BeforeHookCallback) {
-                module.handleSslPeerUnverified()
-            }
+    inner class SslPeerUnverifiedHooker : XposedInterface.Hooker {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            handleSslPeerUnverified()
+            return chain.proceed()
+        }
+    }
+
+    inner class LoadLibraryHooker : XposedInterface.Hooker {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            return handleLoadLibrary(chain)
         }
     }
 
@@ -365,7 +348,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
         logMessage("Flutter: Runtime class found: $runtimeClass")
 
-        // List all methods that contain "load" in name for debugging
         val loadMethods = runtimeClass.declaredMethods.filter { it.name.contains("load", ignoreCase = true) }
         logMessage("Flutter: Runtime load-related methods: ${loadMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }.joinToString(",")})" }}")
 
@@ -377,7 +359,7 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
             logMessage("Flutter: found Runtime.loadLibrary0: ${loadLibrary0.toGenericString()}")
             currentPackageName = packageName
             runCatching {
-                hook(loadLibrary0, LoadLibraryHooker::class.java)
+                hook(loadLibrary0).intercept(LoadLibraryHooker())
                 logMessage("Flutter: hooked Runtime.loadLibrary0 successfully")
             }.onFailure {
                 logMessage("Flutter: failed to hook Runtime.loadLibrary0: ${it.message}")
@@ -390,7 +372,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         val loadLibrary0Any = runtimeClass.declaredMethods.filter { it.name == "loadLibrary0" }
         logMessage("Flutter: loadLibrary0 overloads: ${loadLibrary0Any.map { "${it.name}(${it.parameterTypes.size} params: ${it.parameterTypes.map { p -> p.name }.joinToString(",")})" }}")
 
-        // Fallback: try hooking System.loadLibrary
         logMessage("Flutter: trying System.loadLibrary fallback")
         val systemClass = findClass("java.lang.System", classLoader)
         if (systemClass == null) {
@@ -413,7 +394,7 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         logMessage("Flutter: found System.loadLibrary: ${loadLibraryMethod.toGenericString()}")
         currentPackageName = packageName
         runCatching {
-            hook(loadLibraryMethod, LoadLibraryHooker::class.java)
+            hook(loadLibraryMethod).intercept(LoadLibraryHooker())
             logMessage("Flutter: hooked System.loadLibrary successfully")
         }.onFailure {
             logMessage("Flutter: failed to hook System.loadLibrary: ${it.message}")
@@ -421,23 +402,21 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
     }
 
-    private fun handleLoadLibrary(callback: XposedInterface.BeforeHookCallback) {
-        // Log every call to loadLibrary
-        val allArgs = callback.args.mapIndexed { i, a -> "arg$i=${a?.javaClass?.simpleName}:$a" }.joinToString(", ")
+    private fun handleLoadLibrary(chain: XposedInterface.Chain): Any? {
+        val allArgs = chain.args.mapIndexed { i, a -> "arg$i=${a?.javaClass?.simpleName}:$a" }.joinToString(", ")
         logMessage("Flutter: handleLoadLibrary called, args=[$allArgs]")
 
-        // Find the library name argument (last String param)
-        val libName = callback.args.filterIsInstance<String>().lastOrNull()
+        val libName = chain.args.filterIsInstance<String>().lastOrNull()
         if (libName == null) {
             logMessage("Flutter: no String argument found in loadLibrary call")
-            return
+            return chain.proceed()
         }
         logMessage("Flutter: loadLibrary called with name=\"$libName\"")
 
-        if (libName != "flutter") return
+        if (libName != "flutter") return chain.proceed()
         if (flutterPatched) {
             logMessage("Flutter: already patched, skipping")
-            return
+            return chain.proceed()
         }
 
         logMessage("Flutter: intercepted loadLibrary(\"flutter\")!")
@@ -445,13 +424,11 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         val arch = FlutterSslPatcher.detectArch()
         logMessage("Flutter: detected architecture: $arch")
 
-        // Find original libflutter.so via ApplicationInfo
         val pkg = currentPackageName ?: run {
             logMessage("Flutter: currentPackageName is null!")
-            return
+            return chain.proceed()
         }
 
-        // Strategy 1: Use ClassLoader.findLibrary() to resolve the exact path
         logMessage("Flutter: trying ClassLoader.findLibrary...")
         var srcFile: File? = null
         try {
@@ -471,7 +448,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
             logMessage("Flutter: ClassLoader.findLibrary failed: ${e.message}")
         }
 
-        // Strategy 2: Use ApplicationInfo.nativeLibraryDir
         if (srcFile == null) {
             logMessage("Flutter: trying ApplicationInfo.nativeLibraryDir...")
             try {
@@ -492,22 +468,18 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
             }
         }
 
-        // Strategy 3: search /proc/self/maps (won't work in before-hook, but try anyway)
         if (srcFile == null) {
             logMessage("Flutter: trying /proc/self/maps...")
             srcFile = findLibFlutterFromMaps()
         }
 
-        if (srcFile == null || !srcFile!!.exists()) {
+        if (srcFile == null || !srcFile.exists()) {
             logMessage("Flutter: libflutter.so not found for package $pkg")
-            // Don't skip the original load - the library hasn't been loaded yet
-            // After it loads, we might find it via maps
-            return
+            return chain.proceed()
         }
 
-        logMessage("Flutter: found libflutter.so at ${srcFile!!.absolutePath} (size=${srcFile!!.length()} bytes)")
+        logMessage("Flutter: found libflutter.so at ${srcFile.absolutePath} (size=${srcFile.length()} bytes)")
 
-        // Create patched copy in the app's cache directory
         val cacheDir = File("/data/data/$pkg/cache")
         if (!cacheDir.exists()) {
             logMessage("Flutter: creating cache dir: ${cacheDir.absolutePath}")
@@ -515,23 +487,21 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
         val dstFile = File(cacheDir, "libflutter_patched.so")
 
-        logMessage("Flutter: patching ${srcFile!!.absolutePath} -> ${dstFile.absolutePath}")
-        val success = FlutterSslPatcher.patchLibrary(srcFile!!, dstFile, arch)
+        logMessage("Flutter: patching ${srcFile.absolutePath} -> ${dstFile.absolutePath}")
+        val success = FlutterSslPatcher.patchLibrary(srcFile, dstFile, arch)
         if (!success) {
             logMessage("Flutter: patching failed — no pattern matched")
-            return
+            return chain.proceed()
         }
 
         logMessage("Flutter: patch succeeded, loading patched library...")
-        // Load the patched library instead of the original
         try {
             val runtime = Runtime.getRuntime()
-            val callerClass: Class<*>? = callback.args.firstOrNull { it is Class<*> } as? Class<*>
+            val callerClass: Class<*>? = chain.args.firstOrNull { it is Class<*> } as? Class<*>
                 ?: appClassLoader?.let { findClass("io.flutter.embedding.engine.FlutterJNI", it) }
-            
+
             var loaded = false
 
-            // Try load0(Class, String) (Android 14/15/some older)
             if (!loaded && callerClass != null) {
                 try {
                     val load0 = runtime.javaClass.declaredMethods.firstOrNull {
@@ -550,7 +520,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
                 }
             }
 
-            // Try load0(ClassLoader, String)
             if (!loaded && appClassLoader != null) {
                 try {
                     val load0Cl = runtime.javaClass.declaredMethods.firstOrNull {
@@ -569,7 +538,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
                 }
             }
 
-            // Try load(String, ClassLoader)
             if (!loaded && appClassLoader != null) {
                 try {
                     val loadCl = runtime.javaClass.declaredMethods.firstOrNull {
@@ -588,7 +556,6 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
                 }
             }
 
-            // Try nativeLoad(String, ClassLoader)
             if (!loaded && appClassLoader != null) {
                 try {
                     val nativeLoad = runtime.javaClass.declaredMethods.firstOrNull {
@@ -618,41 +585,13 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
 
             flutterPatched = true
             logMessage("Flutter: loaded patched libflutter.so successfully!")
-            // Skip the original loadLibrary call
-            callback.returnAndSkip(null)
+            // Skip the original loadLibrary call — return null without proceeding
+            return null
         } catch (e: Exception) {
             logMessage("Flutter: failed to load patched library: ${e.javaClass.name}: ${e.message}")
             logMessage("Flutter: stack: ${e.stackTraceToString().take(500)}")
-            // Let the original load proceed
+            return chain.proceed()
         }
-    }
-
-    private fun findLibFlutter(dir: File, arch: String): File? {
-        if (!dir.exists() || !dir.isDirectory) return null
-        // Check common native lib paths
-        val archDirs = when (arch) {
-            "arm64" -> listOf("arm64-v8a", "arm64")
-            "arm" -> listOf("armeabi-v7a", "armeabi", "arm")
-            "x64" -> listOf("x86_64", "x64")
-            "x86" -> listOf("x86")
-            else -> listOf(arch)
-        }
-
-        // Direct check: dir/lib/<archDir>/libflutter.so
-        for (archDir in archDirs) {
-            val candidate = File(dir, "lib/$archDir/libflutter.so")
-            if (candidate.exists()) return candidate
-        }
-
-        // Recursive search
-        dir.listFiles()?.forEach { child ->
-            if (child.isDirectory) {
-                findLibFlutter(child, arch)?.let { return it }
-            } else if (child.name == "libflutter.so") {
-                return child
-            }
-        }
-        return null
     }
 
     private fun findLibFlutterFromMaps(): File? {
@@ -669,20 +608,9 @@ class SslUnpinModule(base: XposedInterface, param: ModuleLoadedParam) : XposedMo
         }
     }
 
-    @XposedHooker
-    class LoadLibraryHooker : XposedInterface.Hooker {
-        companion object {
-            @JvmStatic
-            @BeforeInvocation
-            fun beforeInvocation(callback: XposedInterface.BeforeHookCallback) {
-                module.handleLoadLibrary(callback)
-            }
-        }
-    }
-
     companion object {
         private lateinit var module: SslUnpinModule
-        private val methodActions = ConcurrentHashMap<Member, HookAction>()
+        private val methodActions = ConcurrentHashMap<Executable, HookAction>()
         private val hookedMembers = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
         private val dynamicHooks = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
         private val TRUST_ALL_MANAGERS: Array<TrustManager> = arrayOf(TrustAllManager())
