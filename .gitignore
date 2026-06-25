@@ -6,3 +6,4 @@ temp_*
 refs
 build_*
 .gradle
+local.properties
